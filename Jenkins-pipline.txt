@@ -1,0 +1,77 @@
+pipeline {
+    agent {
+        node {
+            label 'prod'
+        }
+    }
+
+    tools {
+        maven 'mymaven'
+    }
+
+    stages {
+
+        stage('Code') {
+            steps {
+                git 'https://github.com/Iamsuresh-code/dockerwebapp.git'
+            }
+        }
+
+        stage('Build') {
+            steps {
+                sh 'mvn clean install'
+            }
+        }
+
+        stage('CQA') {
+            steps {
+                withSonarQubeEnv('mysonar') {
+                    sh '''
+                        mvn org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
+                        -Dsonar.projectKey=Myproject
+                    '''
+                }
+            }
+        }
+        stage('QualityGates') {
+            steps {
+                waitForQualityGate abortPipeline: true, credentialsId: 'sonar-passwrod'
+            }
+    }
+        stage('Artifact') {
+            steps {
+                nexusArtifactUploader artifacts: [[artifactId: 'vprofile', classifier: '', file: 'target/vprofile-v2.war', type: 'war']], credentialsId: 'nexus', groupId: 'com.visualpathit', nexusUrl: '32.197.193.54:8081', nexusVersion: 'nexus3', protocol: 'http', repository: 'myrepo', version: 'v2'
+            }
+        }
+        stage('images') {
+            steps {
+                sh 'cp -r target Docker-app'
+                sh 'docker build -t appimage Docker-app'
+                sh 'docker build -t dbimage Docker-db'
+            }
+        }
+        stage('images scan') {
+            steps {
+                sh 'trivy image appimage >> app-image-report.txt'
+                sh 'trivy image dbimage >> db-image-report.txt'
+            }
+        }
+        stage('registry') {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'dockerhub') {
+                        sh 'docker tag appimage sureshkommula/flm-oct:javaapp'
+                        sh 'docker tag dbimage sureshkommula/flm-oct:db'
+                        sh 'docker push sureshkommula/flm-oct:javaapp'
+                        sh 'docker push sureshkommula/flm-oct:db'
+                    }
+                }
+            }
+        }
+        stage('Deploy') {
+            steps {
+                sh 'docker stack deploy myapp --compose-file=compose.yml'
+            }
+        }
+}
+}
